@@ -14,6 +14,13 @@ class SimpleSLPClassifier(BaseSLPEstimator):
     Simple Single Layer Perceptron Classifier with one hidden layer.
 
     Compatible interface with sklearn.neural_network.MLPClassifier.
+
+    Architecture:
+        Input -> [W1, b1] -> Hidden (activation) -> [W2, b2] -> Output (softmax)
+
+    Supports binary and multi-class classification via one-hot encoding
+    and softmax output. Uses cross-entropy loss and the Adam optimizer.
+    Optionally stops early when the training loss stops improving.
     """
 
     def __init__(
@@ -23,6 +30,8 @@ class SimpleSLPClassifier(BaseSLPEstimator):
         learning_rate: float = 0.001,
         max_iter: int = 200,
         random_state: Optional[int] = None,
+        tol: float = 1e-4,
+        n_iter_no_change: Optional[int] = 10,
     ) -> None:
         """
         Initialize the SLP classifier.
@@ -32,43 +41,63 @@ class SimpleSLPClassifier(BaseSLPEstimator):
         hidden_layer_size : int
             Number of neurons in the hidden layer
         activation : str
-            Activation function ('identity', 'logistic', 'tanh', 'relu'}, default='logistic')
+            Activation function for the hidden layer
+            ('logistic', 'tanh', 'relu'), default='logistic'
         learning_rate : float
-            Learning rate for gradient descent
+            Learning rate for the Adam optimizer
         max_iter : int
-            Maximum number of iterations
+            Maximum number of gradient descent iterations
         random_state : int or None
-            Random seed for reproducibility
+            Random seed for weight initialization reproducibility
+        tol : float
+            Minimum loss improvement per iteration to count as progress.
+        n_iter_no_change : int or None
+            Consecutive iterations without improvement before early stopping.
+            Set to None to disable.
         """
         super().__init__(
-            hidden_layer_size, activation, learning_rate, max_iter, random_state
+            hidden_layer_size, activation, learning_rate, max_iter,
+            random_state, tol, n_iter_no_change,
         )
 
-        # Classifier-specific attributes
-        self.classes_: Optional[NDArray[np.int_]] = None  # Unique class labels
-        self.n_outputs_: Optional[int] = None  # Number of output neurons
+        # Classifier-specific attributes (set during fit)
+        self.classes_: Optional[NDArray[np.int_]] = None
+        self.n_outputs_: Optional[int] = None
 
-    def _forward_propagation(self, X: NDArray[np.floating]) -> Tuple[
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    def _one_hot_encode(self, y: NDArray[np.int_]) -> NDArray[np.floating]:
+        """Convert integer class labels to a one-hot matrix."""
+        n_samples = len(y)
+        n_classes = len(self.classes_)
+        label_to_idx = {label: idx for idx, label in enumerate(self.classes_)}
+        indices = np.array([label_to_idx[label] for label in y])
+        Y_ohe = np.zeros((n_samples, n_classes))
+        Y_ohe[np.arange(n_samples), indices] = 1.0
+        return Y_ohe
+
+    def _forward_propagation(
+        self, X: NDArray[np.floating]
+    ) -> Tuple[
         NDArray[np.floating],
         NDArray[np.floating],
         NDArray[np.floating],
         NDArray[np.floating],
     ]:
         """
-        Perform forward propagation.
+        Forward propagation through the network.
 
-        Parameters:
-        -----------
-        X : array-like, shape (n_samples, n_features)
-            Input data
-
-        Returns:
-        --------
-        z1, a1, z2, y_pred : tuple of arrays
-            Intermediate values for backpropagation
+        Hidden layer  : z1 = X @ W1 + b1 ;  a1 = activation(z1)
+        Output layer  : z2 = a1 @ W2 + b2 ; y_pred = softmax(z2)
         """
-        # TODO: Implement forward propagation
-        pass
+        activation_fn, _ = self._get_activation_function()
+        z1 = X @ self.W1_ + self.b1_
+        a1 = activation_fn(z1)
+        z2 = a1 @ self.W2_ + self.b2_
+        y_pred = softmax(z2)
+        return z1, a1, z2, y_pred
 
     def _backward_propagation(
         self,
@@ -85,49 +114,40 @@ class SimpleSLPClassifier(BaseSLPEstimator):
         NDArray[np.floating],
     ]:
         """
-        Perform backpropagation to compute gradients.
+        Backpropagation for cross-entropy + softmax output.
 
-        Parameters:
-        -----------
-        X : array-like, shape (n_samples, n_features)
-            Input data
-        y : array-like, shape (n_samples, n_outputs)
-            One-hot encoded target
-        z1, a1, z2, y_pred : arrays
-            Values from forward propagation
-
-        Returns:
-        --------
-        dW1, db1, dW2, db2 : tuple of arrays
-            Gradients for weights and biases
+        The gradient of cross-entropy w.r.t. z2 simplifies to (y_pred - y_true) / N,
+        a well-known result that avoids computing the full softmax Jacobian.
         """
-        # TODO: Implement backpropagation
-        # Compute output layer error
-        # Compute hidden layer error
-        # Compute gradients
-        pass
+        _, activation_deriv = self._get_activation_function()
+        n_samples = X.shape[0]
+
+        # Output layer gradient
+        delta2 = (y_pred - y) / n_samples
+        dW2 = a1.T @ delta2
+        db2 = np.sum(delta2, axis=0)
+
+        # Hidden layer gradient
+        delta1 = (delta2 @ self.W2_.T) * activation_deriv(z1)
+        dW1 = X.T @ delta1
+        db1 = np.sum(delta1, axis=0)
+
+        return dW1, db1, dW2, db2
 
     def _compute_loss(
         self, y_true: NDArray[np.floating], y_pred: NDArray[np.floating]
     ) -> float:
         """
-        Compute cross-entropy loss.
+        Mean cross-entropy loss.
 
-        Parameters:
-        -----------
-        y_true : array-like, shape (n_samples, n_classes)
-            One-hot encoded true labels
-        y_pred : array-like, shape (n_samples, n_classes)
-            Predicted probabilities
-
-        Returns:
-        --------
-        loss : float
-            Cross-entropy loss
+        L = -1/N * sum(y_true * log(y_pred))
         """
-        # TODO: Implement cross-entropy loss
-        # Clip predictions to avoid log(0)
-        pass
+        y_pred_clipped = np.clip(y_pred, 1e-15, 1.0 - 1e-15)
+        return -np.mean(np.sum(y_true * np.log(y_pred_clipped), axis=1))
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def fit(
         self, X: NDArray[np.floating], y: NDArray[np.int_]
@@ -135,81 +155,115 @@ class SimpleSLPClassifier(BaseSLPEstimator):
         """
         Fit the SLP classifier to training data.
 
+        Uses full-batch gradient descent with the Adam optimizer.
+        Training stops either after `max_iter` iterations or when
+        early stopping is triggered (if `n_iter_no_change` is set).
+
         Parameters:
         -----------
-        X : array-like, shape (n_samples, n_features)
-            Training data
-        y : array-like, shape (n_samples,)
-            Target class labels
+        X : array, shape (n_samples, n_features)
+        y : array, shape (n_samples,)  integer class labels
 
         Returns:
         --------
-        self : object
-            Fitted estimator
+        self
         """
-        # TODO: Implement training loop
-        # 1. Set random seed if provided
-        # 2. (Bonus for multi-class) Identify unique classes and encode y
-        # 3. Initialize weights
-        # 4. For each iteration:
-        #    - Forward propagation
-        #    - Compute loss
-        #    - Backward propagation
-        #    - Update weights
-        #    - Store loss in loss_curve_
-        pass
+        X = np.asarray(X, dtype=float)
+        y = np.asarray(y)
+
+        # Identify classes and encode targets
+        self.classes_ = np.unique(y)
+        self.n_features_in_ = X.shape[1]
+        self.n_outputs_ = len(self.classes_)
+        Y_ohe = self._one_hot_encode(y)
+
+        # Weight initialisation
+        self._initialize_weights()
+        self.loss_curve_ = []
+        self.n_iter_ = 0
+
+        # Adam optimizer state
+        beta1, beta2, eps = 0.9, 0.999, 1e-8
+        mW1 = np.zeros_like(self.W1_); vW1 = np.zeros_like(self.W1_)
+        mb1 = np.zeros_like(self.b1_); vb1 = np.zeros_like(self.b1_)
+        mW2 = np.zeros_like(self.W2_); vW2 = np.zeros_like(self.W2_)
+        mb2 = np.zeros_like(self.b2_); vb2 = np.zeros_like(self.b2_)
+
+        # Early stopping state
+        best_loss = np.inf
+        no_improve_count = 0
+
+        for t in range(1, self.max_iter + 1):
+            self.n_iter_ = t
+
+            # Forward pass + loss
+            z1, a1, z2, y_pred = self._forward_propagation(X)
+            loss = self._compute_loss(Y_ohe, y_pred)
+            self.loss_curve_.append(loss)
+
+            # Early stopping check
+            no_improve_count, best_loss, should_stop = self._check_early_stopping(
+                no_improve_count, loss, best_loss
+            )
+            if should_stop:
+                break
+
+            # Backward pass
+            dW1, db1, dW2, db2 = self._backward_propagation(X, Y_ohe, z1, a1, z2, y_pred)
+
+            # Adam moment updates
+            mW1 = beta1 * mW1 + (1 - beta1) * dW1
+            vW1 = beta2 * vW1 + (1 - beta2) * dW1 ** 2
+            mb1 = beta1 * mb1 + (1 - beta1) * db1
+            vb1 = beta2 * vb1 + (1 - beta2) * db1 ** 2
+            mW2 = beta1 * mW2 + (1 - beta1) * dW2
+            vW2 = beta2 * vW2 + (1 - beta2) * dW2 ** 2
+            mb2 = beta1 * mb2 + (1 - beta1) * db2
+            vb2 = beta2 * vb2 + (1 - beta2) * db2 ** 2
+
+            # Bias-corrected parameter updates
+            mW1h = mW1 / (1 - beta1 ** t); vW1h = vW1 / (1 - beta2 ** t)
+            mb1h = mb1 / (1 - beta1 ** t); vb1h = vb1 / (1 - beta2 ** t)
+            mW2h = mW2 / (1 - beta1 ** t); vW2h = vW2 / (1 - beta2 ** t)
+            mb2h = mb2 / (1 - beta1 ** t); vb2h = vb2 / (1 - beta2 ** t)
+
+            self.W1_ -= self.learning_rate * mW1h / (np.sqrt(vW1h) + eps)
+            self.b1_ -= self.learning_rate * mb1h / (np.sqrt(vb1h) + eps)
+            self.W2_ -= self.learning_rate * mW2h / (np.sqrt(vW2h) + eps)
+            self.b2_ -= self.learning_rate * mb2h / (np.sqrt(vb2h) + eps)
+
+        return self
 
     def predict_proba(self, X: NDArray[np.floating]) -> NDArray[np.floating]:
         """
         Predict class probabilities for X.
 
-        Parameters:
-        -----------
-        X : array-like, shape (n_samples, n_features)
-            Samples
-
         Returns:
         --------
-        proba : array-like, shape (n_samples, n_classes)
-            Class probabilities
+        proba : array, shape (n_samples, n_classes)
         """
-        # TODO: Implement prediction
-        # Use forward propagation and return softmax output
-        pass
+        X = np.asarray(X, dtype=float)
+        _, _, _, y_pred = self._forward_propagation(X)
+        return y_pred
 
     def predict(self, X: NDArray[np.floating]) -> NDArray[np.int_]:
         """
         Predict class labels for X.
 
-        Parameters:
-        -----------
-        X : array-like, shape (n_samples, n_features)
-            Samples
-
         Returns:
         --------
-        y_pred : array-like, shape (n_samples,)
-            Predicted class labels
+        y_pred : array, shape (n_samples,)  original class labels
         """
-        # TODO: Implement prediction
-        # Get probabilities and return class with highest probability
-        pass
+        proba = self.predict_proba(X)
+        indices = np.argmax(proba, axis=1)
+        return self.classes_[indices]
 
     def score(self, X: NDArray[np.floating], y: NDArray[np.int_]) -> float:
         """
-        Return the mean accuracy on the given test data and labels.
-
-        Parameters:
-        -----------
-        X : array-like, shape (n_samples, n_features)
-            Test samples
-        y : array-like, shape (n_samples,)
-            True labels
+        Return mean accuracy on the given test data.
 
         Returns:
         --------
-        score : float
-            Mean accuracy
+        accuracy : float in [0, 1]
         """
-        # TODO: Implement accuracy computation
-        pass
+        return float(np.mean(self.predict(X) == np.asarray(y)))

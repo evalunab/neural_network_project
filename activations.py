@@ -18,10 +18,9 @@ def relu(z: NDArray[np.floating]) -> NDArray[np.floating]:
     Returns:
     --------
     array-like
-        Activated values
+        Activated values: max(0, z)
     """
-    # TODO: Implement ReLU
-    pass
+    return np.maximum(0, z)
 
 
 def relu_derivative(z: NDArray[np.floating]) -> NDArray[np.floating]:
@@ -36,10 +35,9 @@ def relu_derivative(z: NDArray[np.floating]) -> NDArray[np.floating]:
     Returns:
     --------
     array-like
-        Gradient values
+        Gradient values: 1 if z > 0, else 0
     """
-    # TODO: Implement ReLU derivative
-    pass
+    return (z > 0).astype(float)
 
 
 def tanh(z: NDArray[np.floating]) -> NDArray[np.floating]:
@@ -54,10 +52,9 @@ def tanh(z: NDArray[np.floating]) -> NDArray[np.floating]:
     Returns:
     --------
     array-like
-        Activated values
+        Activated values in (-1, 1)
     """
-    # TODO: Implement tanh (can use np.tanh)
-    pass
+    return np.tanh(z)
 
 
 def tanh_derivative(z: NDArray[np.floating]) -> NDArray[np.floating]:
@@ -72,10 +69,9 @@ def tanh_derivative(z: NDArray[np.floating]) -> NDArray[np.floating]:
     Returns:
     --------
     array-like
-        Gradient values
+        Gradient values: 1 - tanh(z)²
     """
-    # TODO: Implement tanh derivative
-    pass
+    return 1.0 - np.tanh(z) ** 2
 
 
 def logistic(z: NDArray[np.floating]) -> NDArray[np.floating]:
@@ -90,11 +86,11 @@ def logistic(z: NDArray[np.floating]) -> NDArray[np.floating]:
     Returns:
     --------
     array-like
-        Activated values
+        Activated values in (0, 1)
     """
-    # TODO: Implement sigmoid
-    # Hint: Use np.clip to avoid overflow
-    pass
+    # Clip to avoid overflow in exp
+    z_clipped = np.clip(z, -500, 500)
+    return 1.0 / (1.0 + np.exp(-z_clipped))
 
 
 def logistic_derivative(z: NDArray[np.floating]) -> NDArray[np.floating]:
@@ -109,10 +105,10 @@ def logistic_derivative(z: NDArray[np.floating]) -> NDArray[np.floating]:
     Returns:
     --------
     array-like
-        Gradient values
+        Gradient values: sigmoid(z) * (1 - sigmoid(z))
     """
-    # TODO: Implement sigmoid derivative
-    pass
+    sig = logistic(z)
+    return sig * (1.0 - sig)
 
 
 def softmax(z: NDArray[np.floating]) -> NDArray[np.floating]:
@@ -129,5 +125,7 @@ def softmax(z: NDArray[np.floating]) -> NDArray[np.floating]:
     array-like, shape (n_samples, n_classes)
         Probabilities that sum to 1 for each sample
     """
-    # TODO: Implement softmax
-    pass
+    # Subtract row max for numerical stability (avoids overflow in exp)
+    z_shifted = z - np.max(z, axis=1, keepdims=True)
+    exp_z = np.exp(z_shifted)
+    return exp_z / np.sum(exp_z, axis=1, keepdims=True)
